@@ -1,0 +1,168 @@
+from flask import Blueprint, request, jsonify, current_app, redirect
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+from models import db, User
+from authlib.integrations.flask_client import OAuth
+import secrets
+
+auth_bp = Blueprint('auth', __name__, url_prefix='/api/auth')
+
+oauth = OAuth()
+
+@auth_bp.record_once
+def on_load(state):
+    app = state.app
+    oauth.init_app(app)
+    oauth.register(
+        name='google',
+        client_id=app.config.get('GOOGLE_CLIENT_ID'),
+        client_secret=app.config.get('GOOGLE_CLIENT_SECRET'),
+        server_metadata_url='https://accounts.google.com/.well-known/openid-configuration',
+        client_kwargs={'scope': 'openid email profile'},
+    )
+
+@auth_bp.route('/register', methods=['POST'])
+def register():
+    """Register a new user"""
+    data = request.get_json()
+    
+    # Validate required fields
+    required_fields = ['email', 'password', 'full_name']
+    if not all(field in data for field in required_fields):
+        return jsonify({'error': 'Missing required fields'}), 400
+    
+    # Check if user exists
+    if User.query.filter_by(email=data['email']).first():
+        return jsonify({'error': 'Email already registered'}), 400
+    
+    # Create new user
+    user = User(
+        email=data['email'],
+        full_name=data['full_name'],
+        phone=data.get('phone'),
+        is_admin=False
+    )
+    user.set_password(data['password'])
+    
+    db.session.add(user)
+    db.session.commit()
+    
+    # Create access token
+    access_token = create_access_token(identity=str(user.id))
+    
+    return jsonify({
+        'message': 'User registered successfully',
+        'access_token': access_token,
+        'user': user.to_dict()
+    }), 201
+
+@auth_bp.route('/login', methods=['POST'])
+def login():
+    """Login user"""
+    data = request.get_json()
+    
+    if not data.get('email') or not data.get('password'):
+        return jsonify({'error': 'Email and password required'}), 400
+    
+    user = User.query.filter_by(email=data['email']).first()
+    
+    if not user or not user.check_password(data['password']):
+        return jsonify({'error': 'Invalid email or password'}), 401
+    
+    access_token = create_access_token(identity=str(user.id))
+    
+    return jsonify({
+        'access_token': access_token,
+        'user': user.to_dict()
+    }), 200
+
+
+@auth_bp.route('/google/login', methods=['GET'])
+def google_login():
+    if not current_app.config.get('GOOGLE_CLIENT_ID') or not current_app.config.get('GOOGLE_CLIENT_SECRET'):
+        frontend = current_app.config.get('FRONTEND_URL') or 'http://localhost:3000'
+        return redirect(f"{frontend}/login?error=google_oauth_not_configured")
+
+    redirect_uri = current_app.config.get('GOOGLE_REDIRECT_URI') or (
+        request.host_url.rstrip('/') + '/api/auth/google/callback'
+    )
+
+    nonce = secrets.token_urlsafe(16)
+    return oauth.google.authorize_redirect(redirect_uri, nonce=nonce)
+
+
+@auth_bp.route('/google/callback', methods=['GET'])
+def google_callback():
+    if not current_app.config.get('GOOGLE_CLIENT_ID') or not current_app.config.get('GOOGLE_CLIENT_SECRET'):
+        return jsonify({'error': 'Google OAuth is not configured'}), 500
+
+    token = oauth.google.authorize_access_token()
+    userinfo = token.get('userinfo')
+    if not userinfo:
+        userinfo = oauth.google.parse_id_token(token)
+
+    if not userinfo:
+        return jsonify({'error': 'Failed to retrieve Google user info'}), 400
+
+    google_id = userinfo.get('sub')
+    email = (userinfo.get('email') or '').lower().strip()
+    full_name = userinfo.get('name') or (userinfo.get('given_name') or 'User')
+
+    if not email:
+        return jsonify({'error': 'Google account email is required'}), 400
+
+    user = None
+    if google_id:
+        user = User.query.filter_by(google_id=google_id).first()
+    if not user:
+        user = User.query.filter_by(email=email).first()
+
+    if not user:
+        user = User(email=email, full_name=full_name, is_admin=False, google_id=google_id)
+        user.password_hash = ''  # Google users don't have passwords
+        db.session.add(user)
+    else:
+        # Link google_id if missing
+        if google_id and not user.google_id:
+            user.google_id = google_id
+        # Update name if empty
+        if not user.full_name and full_name:
+            user.full_name = full_name
+
+    # Safe admin assignment: whitelist only
+    admin_emails = current_app.config.get('ADMIN_GOOGLE_EMAILS') or []
+    if email in admin_emails:
+        user.is_admin = True
+
+    db.session.commit()
+
+    access_token = create_access_token(identity=str(user.id))
+    frontend = current_app.config.get('FRONTEND_URL') or 'http://localhost:3000'
+    return redirect(f"{frontend}/auth/google/callback?token={access_token}")
+
+@auth_bp.route('/me', methods=['GET', 'DELETE'])
+@jwt_required()
+def user_me():
+    """Get or delete current user account"""
+    user_id = get_jwt_identity()
+    user = User.query.get(user_id)
+    
+    if not user:
+        return jsonify({'error': 'User not found'}), 404
+    
+    if request.method == 'GET':
+        return jsonify(user.to_dict()), 200
+    elif request.method == 'DELETE':
+        # Check if user has any active bookings
+        active_bookings = Booking.query.filter_by(
+            user_id=user_id,
+            status='confirmed'
+        ).count()
+        
+        if active_bookings > 0:
+            return jsonify({'error': 'Cannot delete account with active bookings. Please cancel all bookings first.'}), 400
+        
+        # Delete user (cascade will handle related data)
+        db.session.delete(user)
+        db.session.commit()
+        
+        return jsonify({'message': 'Account deleted successfully'}), 200
