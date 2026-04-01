@@ -4,39 +4,72 @@ import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api/api';
 
 const AuthContext = createContext(undefined);
+const AUTH_USER_KEY = 'auth-user';
 
-// helper to get base url (used in cases we still need fetch)
-const BASE = process.env.NEXT_PUBLIC_API_BASE || 'http://localhost:5000';
+const readCachedUser = () => {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = localStorage.getItem(AUTH_USER_KEY);
+    return raw ? JSON.parse(raw) : null;
+  } catch {
+    return null;
+  }
+};
+
+const writeCachedUser = (user) => {
+  if (typeof window === 'undefined') return;
+  if (!user) {
+    localStorage.removeItem(AUTH_USER_KEY);
+    return;
+  }
+  localStorage.setItem(AUTH_USER_KEY, JSON.stringify(user));
+};
 
 export function AuthProvider({ children }) {
-  const [user, setUser] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const cachedUser = readCachedUser();
+  const [user, setUser] = useState(cachedUser);
+  const [isLoading, setIsLoading] = useState(Boolean(typeof window !== 'undefined' && localStorage.getItem('token') && !cachedUser));
   const router = useRouter();
 
   useEffect(() => {
-    // Check if user is logged in on mount
     const token = typeof window !== 'undefined' ? localStorage.getItem('token') : null;
-    if (token) {
-      // Verify token with your backend
-      verifyToken(token);
-    } else {
+    if (!token) {
+      writeCachedUser(null);
+      setUser(null);
       setIsLoading(false);
+      return;
     }
+
+    if (cachedUser) {
+      setUser(cachedUser);
+      setIsLoading(false);
+      verifyToken({ silent: true });
+      return;
+    }
+
+    verifyToken();
   }, []);
 
-  const verifyToken = async (token) => {
+  const verifyToken = async ({ silent = false } = {}) => {
+    if (!silent) {
+      setIsLoading(true);
+    }
+
     try {
-      // Call your API to verify token
-      // reuse axios instance for consistency
       const res = await api.get('/auth/me');
       setUser(res.data);
+      writeCachedUser(res.data);
     } catch (error) {
       console.error('Token verification failed:', error);
       if (typeof window !== 'undefined') {
         localStorage.removeItem('token');
       }
+      writeCachedUser(null);
+      setUser(null);
     } finally {
-      setIsLoading(false);
+      if (!silent) {
+        setIsLoading(false);
+      }
     }
   };
 
@@ -49,6 +82,7 @@ export function AuthProvider({ children }) {
         localStorage.setItem('token', access_token);
       }
       setUser(user);
+      writeCachedUser(user);
       const redirectPath = typeof window !== 'undefined' ? localStorage.getItem('redirectAfterLogin') : null;
       if (typeof window !== 'undefined') localStorage.removeItem('redirectAfterLogin');
       router.push(redirectPath || '/events');
@@ -70,8 +104,6 @@ export function AuthProvider({ children }) {
         password,
         ...(phone ? { phone } : {}),
       });
-
-      // Axios responses use `data`
       return response.data;
     } catch (error) {
       console.error('Registration error:', error);
@@ -86,6 +118,7 @@ export function AuthProvider({ children }) {
     if (typeof window !== 'undefined') {
       localStorage.removeItem('token');
     }
+    writeCachedUser(null);
     setUser(null);
     router.push('/login');
   };

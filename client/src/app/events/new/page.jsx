@@ -13,7 +13,7 @@ import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Button } from '@/components/ui/button'
 import { Switch } from '@/components/ui/switch'
-import { CalendarIcon, MapPinIcon, UsersIcon, CreditCardIcon, SparklesIcon, ImageIcon, MinusCircle } from 'lucide-react'
+import { CalendarIcon, MapPinIcon, SparklesIcon, ImageIcon } from 'lucide-react'
 import {
   Select,
   SelectContent,
@@ -26,12 +26,14 @@ import { Badge } from '@/components/ui/badge'
 import { toast } from 'sonner';
 import { api } from '@/lib/api/api'
 import eventService from '@/lib/api/events'
+import { addNotification } from '@/lib/notifications'
 import { categories as defaultCategories } from '@/data/mockData'
 
 export default function CreateEventPage() {
   const [isGeneratingAI, setIsGeneratingAI] = useState(false)
   const [activeTab, setActiveTab] = useState('details')
   const [categories, setCategories] = useState(defaultCategories)
+  const [isFetchingLocation, setIsFetchingLocation] = useState(false)
 
   const [formData, setFormData] = useState({
     title: '',
@@ -44,18 +46,17 @@ export default function CreateEventPage() {
     endDate: '',
     endTime: '',
     isPublic: true,
-    capacityType: 'unlimited',
     capacity: '',
+    ticketPrice: '',
     paymentMethod: 'free',
     requiresApproval: false,
     category: '',
-    tags: ''
+    tags: '',
+    showLocationMap: false,
+    locationLatitude: '',
+    locationLongitude: ''
   })
 
-  // tickets array used in tickets tab
-  const [ticketTypes, setTicketTypes] = useState([
-    { name: 'Regular', price: '', quantity: '' }
-  ])
 
   const handleChange = (e) => {
     const { name, value } = e.target
@@ -78,12 +79,11 @@ export default function CreateEventPage() {
   }, [formData]);
 
   const isTicketsValid = useMemo(() => {
-    // free events don't require ticket types; paid events do
     if (formData.paymentMethod === 'free') {
-      return true;
+      return true
     }
-    return ticketTypes.some(t => t.name.trim() && t.price !== '' && t.quantity !== '');
-  }, [ticketTypes, formData.paymentMethod]);
+    return Number(formData.ticketPrice) > 0 && Number(formData.capacity) > 0
+  }, [formData.paymentMethod, formData.ticketPrice, formData.capacity]);
 
   // fetch category list from server
   useEffect(() => {
@@ -102,6 +102,41 @@ export default function CreateEventPage() {
     }
     fetchCategories()
   }, [])
+
+  const handleUseCurrentLocation = () => {
+    if (typeof window === 'undefined' || !navigator.geolocation) {
+      alert('Location sharing is not supported on this device or browser.')
+      return
+    }
+
+    setIsFetchingLocation(true)
+    navigator.geolocation.getCurrentPosition(
+      (position) => {
+        setFormData(prev => ({
+          ...prev,
+          showLocationMap: true,
+          locationLatitude: String(position.coords.latitude),
+          locationLongitude: String(position.coords.longitude)
+        }))
+        setIsFetchingLocation(false)
+      },
+      (error) => {
+        console.error('Failed to capture location:', error)
+        alert('We could not access your current location. Please allow location access and try again.')
+        setIsFetchingLocation(false)
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 300000 }
+    )
+  }
+
+  const handleLocationMapToggle = (checked) => {
+    setFormData(prev => ({
+      ...prev,
+      showLocationMap: checked,
+      locationLatitude: checked ? prev.locationLatitude : '',
+      locationLongitude: checked ? prev.locationLongitude : ''
+    }))
+  }
 
   const handleFileChange = (e) => {
     const file = e.target.files?.[0]
@@ -146,18 +181,12 @@ export default function CreateEventPage() {
         ? new Date(`${formData.endDate}T${formData.endTime}`)
         : null
 
-      const totalSeats = formData.capacityType === 'limited'
+      const totalSeats = formData.paymentMethod === 'paid'
         ? parseInt(formData.capacity || '0', 10)
         : 0
-      // compute a sensible default price for the event.  the backend
-      // uses the `price` field when reserving individual seats, so when
-      // the organizer has defined one or more ticket tiers we take the
-      // price of the first tier. for simple general‑admission events the
-      // frontend also sends a `tickets` array; the backend ignores it if
-      // the event has reserved seating (total_seats > 0).
       let price = 0
-      if (formData.paymentMethod !== 'free' && ticketTypes.length > 0) {
-        price = Number(ticketTypes[0].price) || 0
+      if (formData.paymentMethod === 'paid') {
+        price = Number(formData.ticketPrice) || 0
       }
 
       const payload = {
@@ -166,6 +195,9 @@ export default function CreateEventPage() {
         date: startDateTime ? startDateTime.toISOString() : undefined,
         venue: formData.location,
         price,
+        location_latitude: formData.showLocationMap && formData.locationLatitude ? Number(formData.locationLatitude) : undefined,
+        location_longitude: formData.showLocationMap && formData.locationLongitude ? Number(formData.locationLongitude) : undefined,
+        show_location_map: formData.showLocationMap,
         total_seats: totalSeats,
         category_id: formData.category ? parseInt(formData.category, 10) : undefined,
         // additional optional fields the backend ignores
@@ -173,13 +205,13 @@ export default function CreateEventPage() {
         requires_approval: formData.requiresApproval,
         created_by: user?.id || undefined,
         tags: formData.tags ? formData.tags.split(',').map(t => t.trim()) : undefined,
-        tickets: formData.paymentMethod === 'free'
-          ? []
-          : ticketTypes.map(t => ({
-              name: t.name,
-              price: Number(t.price) || 0,
-              quantity: Number(t.quantity) || 0
-            }))
+        tickets: formData.paymentMethod === 'paid'
+          ? [{
+              name: 'General Admission',
+              price: Number(formData.ticketPrice) || 0,
+              quantity: Number(formData.capacity) || 0
+            }]
+          : []
       }
 
       // basic validation
@@ -199,6 +231,14 @@ export default function CreateEventPage() {
       // page where they typically land when signing in. the event will
       // still show up under the events listing if needed.
       toast.success('Event published successfully!');
+      if (user?.id) {
+        addNotification(user.id, {
+          type: 'event_created',
+          title: 'Event published',
+          message: `Your event "${created.title}" is now live on Eventra.`,
+          url: `/events/${created.id}`,
+        });
+      }
       router.push('/home');
     } catch (error) {
       console.error('Failed to create event:', error);
@@ -416,8 +456,8 @@ export default function CreateEventPage() {
 
                 {/* Location */}
                 <Card className="bg-slate-900 border-slate-800">
-                  <CardContent className="p-6">
-                    <div className="flex items-center gap-2 mb-4">
+                  <CardContent className="p-6 space-y-4">
+                    <div className="flex items-center gap-2">
                       <MapPinIcon className="w-5 h-5 text-slate-400" />
                       <h3 className="font-medium text-white">Location</h3>
                     </div>
@@ -429,9 +469,53 @@ export default function CreateEventPage() {
                       onChange={handleChange}
                       className="rounded-xl border-slate-700 bg-slate-800 text-white placeholder:text-slate-500"
                     />
-                    <p className="text-xs text-slate-500 mt-2">
+                    <p className="text-xs text-slate-500">
                       You can add a physical address or a video call link
                     </p>
+
+                    <div className="flex items-start justify-between gap-4 rounded-xl border border-slate-700 bg-slate-800/60 p-4">
+                      <div>
+                        <p className="text-sm font-medium text-white">Show map from my current location</p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          If you allow location access, attendees will see a map on the event page.
+                        </p>
+                      </div>
+                      <Switch
+                        checked={formData.showLocationMap}
+                        onCheckedChange={handleLocationMapToggle}
+                      />
+                    </div>
+
+                    {formData.showLocationMap && (
+                      <div className="space-y-3 rounded-xl border border-blue-800/60 bg-blue-950/20 p-4">
+                        <div className="flex flex-wrap items-center gap-3">
+                          <Button
+                            type="button"
+                            variant="outline"
+                            onClick={handleUseCurrentLocation}
+                            disabled={isFetchingLocation}
+                            className="rounded-full border-blue-700 text-blue-200 hover:bg-blue-900/40"
+                          >
+                            {isFetchingLocation ? 'Getting location...' : 'Use my current location'}
+                          </Button>
+                          {formData.locationLatitude && formData.locationLongitude && (
+                            <span className="text-xs text-blue-200">
+                              Coordinates ready for map sharing
+                            </span>
+                          )}
+                        </div>
+                        {formData.locationLatitude && formData.locationLongitude && (
+                          <div className="overflow-hidden rounded-xl border border-slate-700">
+                            <iframe
+                              title="Selected event location"
+                              src={`https://www.openstreetmap.org/export/embed.html?bbox=${Number(formData.locationLongitude) - 0.01}%2C${Number(formData.locationLatitude) - 0.01}%2C${Number(formData.locationLongitude) + 0.01}%2C${Number(formData.locationLatitude) + 0.01}&layer=mapnik&marker=${formData.locationLatitude}%2C${formData.locationLongitude}`}
+                              className="h-64 w-full"
+                              loading="lazy"
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
 
@@ -488,89 +572,79 @@ export default function CreateEventPage() {
 {activeTab === 'tickets' && (
   <div className="space-y-6">
     <Card className="bg-slate-900 border-slate-800">
-      <CardContent className="p-6 space-y-4">
-        <h3 className="font-medium text-white">Ticket Types & Pricing</h3>
-        <p className="text-slate-400 text-sm">
-          Define ticket categories like Regular, VIP, VVIP and set prices for each tier.
-        </p>
+      <CardContent className="p-6 space-y-6">
+        <div>
+          <h3 className="font-medium text-white">Tickets</h3>
+          <p className="text-slate-400 text-sm mt-1">
+            Choose whether this event is free or paid. For paid events, set the ticket price and available seats.
+          </p>
+        </div>
+
+        <div className="grid gap-4 md:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => setFormData(prev => ({ ...prev, paymentMethod: 'free', ticketPrice: '', capacity: '' }))}
+            className={`rounded-2xl border p-5 text-left transition-colors ${
+              formData.paymentMethod === 'free'
+                ? 'border-blue-500 bg-blue-950/30'
+                : 'border-slate-700 bg-slate-800/60 hover:border-slate-500'
+            }`}
+          >
+            <p className="text-base font-semibold text-white">Free</p>
+            <p className="mt-2 text-sm text-slate-400">Attendees can register without paying for a ticket.</p>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setFormData(prev => ({ ...prev, paymentMethod: 'paid' }))}
+            className={`rounded-2xl border p-5 text-left transition-colors ${
+              formData.paymentMethod === 'paid'
+                ? 'border-blue-500 bg-blue-950/30'
+                : 'border-slate-700 bg-slate-800/60 hover:border-slate-500'
+            }`}
+          >
+            <p className="text-base font-semibold text-white">Paid</p>
+            <p className="mt-2 text-sm text-slate-400">Charge for entry and control the number of seats available.</p>
+          </button>
+        </div>
 
         {formData.paymentMethod === 'free' ? (
-          <div className="rounded-2xl border border-slate-700 bg-slate-900 p-6">
-            <h4 className="font-semibold text-white mb-2">Free event</h4>
-            <p className="text-slate-400">
-              This event is free and does not require ticket purchases.
-              Attendees can register without payment.
-            </p>
+          <div className="rounded-2xl border border-slate-700 bg-slate-800/50 p-5">
+            <p className="font-medium text-white">Free event selected</p>
+            <p className="mt-1 text-sm text-slate-400">No ticket price or seat inventory is required.</p>
           </div>
         ) : (
-          <>
-            {ticketTypes.map((ticket, idx) => (
-              <div key={idx} className="grid grid-cols-3 gap-2 items-end">
-                <Input
-                  placeholder="Regular, VIP, VVIP"
-                  value={ticket.name}
-                  onChange={(e) => {
-                    const newTickets = [...ticketTypes];
-                    newTickets[idx].name = e.target.value;
-                    setTicketTypes(newTickets);
-                  }}
-                  className="rounded-xl border-slate-700 bg-slate-800 text-white"
-                />
-                <Input
-                  placeholder="Price"
-                  type="number"
-                  value={ticket.price}
-                  onChange={(e) => {
-                    const newTickets = [...ticketTypes];
-                    newTickets[idx].price = e.target.value;
-                    setTicketTypes(newTickets);
-                  }}
-                  className="rounded-xl border-slate-700 bg-slate-800 text-white"
-                />
-                <Input
-                  placeholder="Quantity"
-                  type="number"
-                  value={ticket.quantity}
-                  onChange={(e) => {
-                    const newTickets = [...ticketTypes];
-                    newTickets[idx].quantity = e.target.value;
-                    setTicketTypes(newTickets);
-                  }}
-                  className="rounded-xl border-slate-700 bg-slate-800 text-white"
-                />
-                {ticketTypes.length > 1 && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    className="text-red-400 hover:text-red-300"
-                    onClick={() => {
-                      const newTickets = ticketTypes.filter((_, index) => index !== idx);
-                      setTicketTypes(newTickets);
-                    }}
-                  >
-                    <MinusCircle className="h-5 w-5" />
-                  </Button>
-                )}
-              </div>
-            ))}
-
-            {formData.paymentMethod !== 'free' && (
-              <Button
-                type="button"
-                variant="ghost"
-                size="sm"
-                onClick={() => setTicketTypes(prev => [...prev, { name: '', price: '', quantity: '' }])}
-                className="text-blue-400 hover:text-blue-300"
-              >
-                + Add ticket type
-              </Button>
-            )}
-          </>
+          <div className="grid gap-4 md:grid-cols-2">
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-300">Ticket Price</label>
+              <Input
+                name="ticketPrice"
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="e.g. 1500"
+                value={formData.ticketPrice}
+                onChange={handleChange}
+                className="rounded-xl border-slate-700 bg-slate-800 text-white"
+              />
+            </div>
+            <div>
+              <label className="mb-2 block text-sm font-medium text-slate-300">Available Seats</label>
+              <Input
+                name="capacity"
+                type="number"
+                min="1"
+                placeholder="e.g. 120"
+                value={formData.capacity}
+                onChange={handleChange}
+                className="rounded-xl border-slate-700 bg-slate-800 text-white"
+              />
+            </div>
+          </div>
         )}
       </CardContent>
     </Card>
 
-    {/* navigation for tickets */}
     <div className="flex justify-between mt-6">
       <Button
         type="button"
@@ -627,70 +701,7 @@ export default function CreateEventPage() {
                   </CardContent>
                 </Card>
 
-                {/* Capacity */}
-                <Card className="bg-slate-900 border-slate-800">
-                  <CardContent className="p-6">
-                    <div className="flex items-center gap-2 mb-4">
-                      <UsersIcon className="w-5 h-5 text-slate-400" />
-                      <h3 className="font-medium text-white">Capacity</h3>
-                    </div>
-                    <Select
-                      value={formData.capacityType}
-                      onValueChange={(value) =>
-                        setFormData(prev => ({ ...prev, capacityType: value }))
-                      }
-                    >
-                      <SelectTrigger className="rounded-xl border-slate-700 bg-slate-800 text-white mb-3">
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent className="bg-slate-900 border-slate-700">
-                        <SelectItem value="unlimited">Unlimited</SelectItem>
-                        <SelectItem value="limited">Limited capacity</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    {formData.capacityType === 'limited' && (
-                      <Input
-                        name="capacity"
-                        type="number"
-                        placeholder="Maximum number of attendees"
-                        onChange={handleChange}
-                        className="rounded-xl border-slate-700 bg-slate-800 text-white placeholder:text-slate-500"
-                      />
-                    )}
-                  </CardContent>
-                </Card>
 
-                {/* Payment method notice */}
-                <Card className="bg-slate-900 border-slate-800">
-                  <CardContent className="p-6">
-                    <div className="flex items-center gap-2 mb-4">
-                      <CreditCardIcon className="w-5 h-5 text-slate-400" />
-                      <h3 className="font-medium text-white">Payment</h3>
-                    </div>
-                    <Select
-                      value={formData.paymentMethod}
-                      onValueChange={(value) =>
-                        setFormData(prev => ({ ...prev, paymentMethod: value }))
-                      }
-                    >
-                      <SelectTrigger className="rounded-xl border-slate-700 bg-slate-800 text-white">
-                        <SelectValue placeholder="Select payment method" />
-                      </SelectTrigger>
-                      <SelectContent className="bg-slate-900 border-slate-700">
-                        <SelectItem value="free">Free event</SelectItem>
-                        <SelectItem value="stripe">Paid (Stripe)</SelectItem>
-                        <SelectItem value="mpesa">M-Pesa</SelectItem>
-                      </SelectContent>
-                    </Select>
-                    {formData.paymentMethod !== 'free' && (
-                      <div className="mt-4 p-4 bg-blue-900/50 rounded-xl">
-                        <p className="text-sm text-blue-300">
-                          You'll set up ticket types and pricing in the previous step.
-                        </p>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
 
                 {/* Tags */}
                 <Card className="bg-slate-900 border-slate-800">
@@ -738,3 +749,6 @@ export default function CreateEventPage() {
     </div>
   )
 }
+
+
+

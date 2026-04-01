@@ -35,7 +35,11 @@ export default function HomePage() {
         // request `all=true` so creators see their own events regardless of
         // date; limit is still applied client‑side afterwards
         const eventsResponse = await api.get('/events?limit=6&all=true');
-        setEvents(Array.isArray(eventsResponse.data) ? eventsResponse.data : []);
+        const allEvents = Array.isArray(eventsResponse.data) ? eventsResponse.data : [];
+        const ownedEvents = user?.id
+          ? allEvents.filter((event) => String(event.created_by) === String(user.id))
+          : [];
+        setEvents(ownedEvents);
       } catch (err) {
         console.error('Error fetching events:', err);
         setEvents([]);
@@ -230,3 +234,4 @@ export default function HomePage() {
     </div>
   );
 }
+

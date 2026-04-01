@@ -1,6 +1,7 @@
 from flask import Blueprint, request, jsonify, current_app
-from flask_jwt_extended import jwt_required, get_jwt_identity
+from flask_jwt_extended import jwt_required, get_jwt_identity, verify_jwt_in_request
 from models import db, Event, Category, User, Seat, Booking
+from utils import send_event_created_email, send_event_cancelled_email
 from datetime import datetime
 import os
 from werkzeug.utils import secure_filename
@@ -116,6 +117,10 @@ def create_event():
         if not all(field in data for field in required_fields):
             return jsonify({'error': 'Missing required fields'}), 400
         
+        location_latitude = data.get('location_latitude')
+        location_longitude = data.get('location_longitude')
+        show_location_map = str(data.get('show_location_map', 'false')).lower() == 'true'
+
         # Create new event
         event = Event(
             title=data['title'],
@@ -126,6 +131,9 @@ def create_event():
             total_seats=int(data['total_seats']),
             category_id=int(data['category_id']),
             image_url=None,
+            location_latitude=float(location_latitude) if location_latitude not in (None, '') else None,
+            location_longitude=float(location_longitude) if location_longitude not in (None, '') else None,
+            show_location_map=show_location_map,
             created_by=get_jwt_identity()
         )
         
@@ -147,6 +155,13 @@ def create_event():
         generate_seats_for_event(event)
         
         db.session.commit()
+
+        try:
+            creator = User.query.get(event.created_by)
+            if creator and creator.email:
+                send_event_created_email(creator.email, event)
+        except Exception as send_err:
+            current_app.logger.error(f"Error sending event created email: {send_err}")
         
         response = jsonify(event.to_dict())
         response.status_code = 201
@@ -210,6 +225,12 @@ def update_event(event_id):
             event.venue = data['venue']
         if 'price' in data:
             event.price = float(data['price'])
+        if 'location_latitude' in data:
+            event.location_latitude = float(data['location_latitude']) if data['location_latitude'] not in (None, '') else None
+        if 'location_longitude' in data:
+            event.location_longitude = float(data['location_longitude']) if data['location_longitude'] not in (None, '') else None
+        if 'show_location_map' in data:
+            event.show_location_map = str(data['show_location_map']).lower() == 'true'
         
         # Handle file upload if present
         if 'image' in request.files:
@@ -255,28 +276,37 @@ def update_event(event_id):
 @events_bp.route('/<int:event_id>/cancel', methods=['POST', 'OPTIONS'])
 @jwt_required()
 def cancel_event(event_id):
-    """Cancel an event (admin only)"""
+    """Cancel an event and notify attendees."""
     if request.method == 'OPTIONS':
         return jsonify({'message': 'OK'}), 200
 
     user_id = get_jwt_identity()
     user = User.query.get(user_id)
-    if not user or not user.is_admin:
-        return jsonify({'error': 'Admin access required'}), 403
-
     event = Event.query.get(event_id)
+
     if not event:
         return jsonify({'error': 'Event not found'}), 404
+
+    if not user or (not user.is_admin and event.created_by != user.id):
+        return jsonify({'error': 'Only the event creator or an admin can cancel this event'}), 403
 
     if event.status == 'cancelled':
         return jsonify({'error': 'Event already cancelled'}), 400
 
     event.status = 'cancelled'
+    notified_emails = set()
+    attendee_emails = set()
 
-    # Optionally cancel associated bookings and release seats
+    if user and user.email:
+        notified_emails.add(user.email)
+
     try:
         bookings = Booking.query.filter_by(event_id=event_id).all()
         for booking in bookings:
+            attendee = booking.user
+            if attendee and attendee.email:
+                attendee_emails.add(attendee.email)
+                notified_emails.add(attendee.email)
             if booking.status != 'cancelled':
                 booking.status = 'cancelled'
                 for seat in booking.seats:
@@ -287,7 +317,21 @@ def cancel_event(event_id):
         current_app.logger.warning(f'Error cancelling associated bookings: {str(e)}')
 
     db.session.commit()
-    return jsonify(event.to_dict()), 200
+
+    if not attendee_emails:
+        current_app.logger.info(f'Event {event_id} cancelled with no attendee bookings to notify.')
+
+    for email in notified_emails:
+        try:
+            send_event_cancelled_email(email, event)
+        except Exception as notify_err:
+            current_app.logger.error(f'Error sending cancellation email to {email}: {notify_err}')
+
+    return jsonify({
+        'event': event.to_dict(),
+        'notifications_sent': len(notified_emails),
+        'attendee_notifications_sent': len(attendee_emails)
+    }), 200
 
 @events_bp.route('/<int:event_id>', methods=['DELETE', 'OPTIONS'])
 @jwt_required()
@@ -346,37 +390,58 @@ def get_event_seats(event_id):
 
 @events_bp.route('/stats', methods=['GET'])
 def get_events_stats():
-    """Get events statistics"""
+    """Get events statistics.
+
+    When an authenticated user is present, scope the stats to events created by
+    that user so the dashboard does not present global numbers as personal ones.
+    """
     try:
         from sqlalchemy import func
 
+        user_id = None
+        try:
+            verify_jwt_in_request(optional=True)
+            user_id = get_jwt_identity()
+        except Exception:
+            user_id = None
+
         # Get current time for filtering
         now = datetime.utcnow()
+        start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+
+        events_query = Event.query.filter(Event.status != 'cancelled')
+        if user_id:
+            events_query = events_query.filter(Event.created_by == user_id)
 
         # Total events
-        total_events = Event.query.count()
+        total_events = events_query.count()
 
         # Upcoming events (future events)
-        upcoming_events = Event.query.filter(Event.date >= now).count()
+        upcoming_events = events_query.filter(Event.date >= now).count()
 
         # Past events
-        past_events = Event.query.filter(Event.date < now).count()
+        past_events = events_query.filter(Event.date < now).count()
 
         # Events this month
-        start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        events_this_month = Event.query.filter(Event.date >= start_of_month).count()
+        events_this_month = events_query.filter(Event.date >= start_of_month).count()
 
-        # Most popular category
-        popular_category = db.session.query(
+        popular_category_query = db.session.query(
             Category.name,
             func.count(Event.id).label('event_count')
-        ).join(Event).group_by(Category.id).order_by(func.count(Event.id).desc()).first()
+        ).join(Event).filter(Event.status != 'cancelled')
+        if user_id:
+            popular_category_query = popular_category_query.filter(Event.created_by == user_id)
+        popular_category = popular_category_query.group_by(Category.id).order_by(func.count(Event.id).desc()).first()
 
-        # Total seats available across all events
-        total_seats = db.session.query(func.sum(Event.total_seats)).scalar() or 0
+        total_seats_query = db.session.query(func.sum(Event.total_seats)).filter(Event.status != 'cancelled')
+        if user_id:
+            total_seats_query = total_seats_query.filter(Event.created_by == user_id)
+        total_seats = total_seats_query.scalar() or 0
 
-        # Reserved seats
-        reserved_seats = Seat.query.filter(Seat.status == 'reserved').count()
+        reserved_seats_query = Seat.query.join(Event, Seat.event_id == Event.id).filter(Seat.status == 'reserved', Event.status != 'cancelled')
+        if user_id:
+            reserved_seats_query = reserved_seats_query.filter(Event.created_by == user_id)
+        reserved_seats = reserved_seats_query.count()
 
         stats = {
             'total_events': total_events,
@@ -398,3 +463,8 @@ def get_events_stats():
     except Exception as e:
         current_app.logger.error(f'Error getting events stats: {str(e)}')
         return jsonify({'error': 'Failed to fetch events statistics'}), 500
+
+
+
+
+

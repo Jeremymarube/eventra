@@ -69,6 +69,9 @@ class Event(db.Model):
     price = db.Column(db.Numeric(10, 2), nullable=False)
     total_seats = db.Column(db.Integer, nullable=False)
     image_url = db.Column(db.String(500))
+    location_latitude = db.Column(db.Float, nullable=True)
+    location_longitude = db.Column(db.Float, nullable=True)
+    show_location_map = db.Column(db.Boolean, default=False, nullable=False)
     status = db.Column(db.Enum('draft', 'published', 'cancelled', name='event_status'), 
                       default='published', nullable=False, index=True)
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False, index=True)
@@ -98,6 +101,9 @@ class Event(db.Model):
             'total_seats': self.total_seats,
             'available_seats': available_seats,
             'image_url': self.image_url,
+            'location_latitude': self.location_latitude,
+            'location_longitude': self.location_longitude,
+            'show_location_map': self.show_location_map,
             'status': self.status,
             # include creator so the frontend can tell whether the logged‑in
             # user owns this event (used for showing edit buttons, etc.)
@@ -203,3 +209,4 @@ class Ticket(db.Model):
             'status': self.status,
             'created_at': self.created_at.isoformat()
         }
+

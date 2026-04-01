@@ -15,7 +15,7 @@ export default function HomePage() {
   useEffect(() => {
     const fetchEvents = async () => {
       try {
-        const response = await api.get('/events?limit=3'); // Get first 3 events for featured
+        const response = await api.get('/events?limit=3');
         setEvents(response.data);
       } catch (error) {
         console.error('Failed to fetch events:', error);
@@ -40,7 +40,6 @@ export default function HomePage() {
             </p>
           </div>
 
-          {/* Create Event CTA */}
           <div className="flex flex-col items-center gap-4 py-8">
             <h2 className="text-2xl font-semibold">Ready to host an event?</h2>
             <p className="text-muted-foreground text-center max-w-md">
@@ -48,7 +47,7 @@ export default function HomePage() {
             </p>
             <div className="flex flex-col sm:flex-row gap-3">
               <Link
-                href="/categories"
+                href="/events"
                 className="inline-flex items-center justify-center rounded-md border border-border bg-background px-8 py-3 text-sm font-medium text-foreground hover:bg-accent transition-colors"
               >
                 Explore Events
@@ -82,6 +81,46 @@ export default function HomePage() {
               </div>
             </div>
           </div>
+
+          <section className="space-y-4">
+            <div className="flex items-center justify-between gap-4">
+              <h3 className="text-2xl font-semibold">Featured Events</h3>
+              <Link href="/events" className="text-sm font-medium text-sky-400 hover:text-sky-300 transition-colors">
+                View all events
+              </Link>
+            </div>
+
+            {loading ? (
+              <div className="grid gap-4 md:grid-cols-3">
+                {[1, 2, 3].map((item) => (
+                  <div key={item} className="h-44 animate-pulse rounded-xl border border-slate-800 bg-slate-900" />
+                ))}
+              </div>
+            ) : events.length > 0 ? (
+              <div className="grid gap-4 md:grid-cols-3">
+                {events.map((event) => (
+                  <Link
+                    key={event.id}
+                    href={`/events/${event.id}`}
+                    className="rounded-xl border border-slate-800 bg-slate-900 p-5 transition-colors hover:border-sky-500/50 hover:bg-slate-900/80"
+                  >
+                    <div className="space-y-2">
+                      <h4 className="text-lg font-semibold text-white line-clamp-1">{event.title}</h4>
+                      <p className="text-sm text-slate-400 line-clamp-2">{event.description || 'Explore the details for this event.'}</p>
+                      <div className="text-sm text-slate-500">
+                        <p>{event.venue || 'Venue to be announced'}</p>
+                        <p>{event.date ? new Date(event.date).toLocaleDateString() : 'Date coming soon'}</p>
+                      </div>
+                    </div>
+                  </Link>
+                ))}
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dashed border-slate-800 p-8 text-center text-slate-400">
+                No featured events yet. Check back soon.
+              </div>
+            )}
+          </section>
         </div>
       </main>
       <Footer />

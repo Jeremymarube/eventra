@@ -5,6 +5,7 @@ import "./globals.css";
 import { AuthProvider } from '@/contexts/AuthContext.jsx';
 import { WebSocketProvider } from '@/contexts/WebSocketContext.jsx';
 import { Providers } from './providers';
+import BackToHomeButton from '@/components/layout/BackToHomeButton.jsx';
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -24,6 +25,7 @@ export default function RootLayout({ children }) {
           <AuthProvider>
             <WebSocketProvider>
               <div className="flex-1">
+                <BackToHomeButton />
                 {children}
               </div>
             </WebSocketProvider>

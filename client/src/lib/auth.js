@@ -4,6 +4,7 @@ import { createContext, useContext, useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
 import { toast } from 'sonner';
 import { api } from './api/api';
+import { addNotification } from '@/lib/notifications';
 
 const AuthContext = createContext();
 
@@ -38,6 +39,14 @@ export function AuthProvider({ children }) {
       const data = response.data;
       setUser(data.user);
       localStorage.setItem('token', data.access_token);
+
+      if (data.user?.id) {
+        addNotification(data.user.id, {
+          type: 'login',
+          title: 'Welcome back!',
+          message: 'You are signed in and ready to manage your events.',
+        });
+      }
 
       toast.success('Logged in successfully');
       return { success: true };

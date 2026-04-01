@@ -6,13 +6,17 @@ import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Calendar, MapPin, Ticket, CreditCard, User, Mail, Phone } from 'lucide-react';
+import { Calendar, MapPin, Ticket, User, Mail, Phone } from 'lucide-react';
 import Link from 'next/link';
+import {
+  loadProfileImage,
+  saveProfileImage,
+  subscribeProfileImageChanges,
+} from '@/lib/profileImage';
 
 export default function ProfilePage() {
   const { user, logout } = useAuth();
@@ -26,6 +30,27 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
   const [imagePreview, setImagePreview] = useState(null);
 
+  useEffect(() => {
+    if (!user) return;
+
+    const savedImage = loadProfileImage(user.id);
+    setProfileData({
+      name: user.name || user.full_name || '',
+      email: user.email || '',
+      phone: user.phone || '',
+      profileImage: savedImage || user.profileImage || null,
+    });
+
+    const unsubscribe = subscribeProfileImageChanges(user.id, (nextImage) => {
+      setProfileData((prev) => ({
+        ...prev,
+        profileImage: nextImage,
+      }));
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
   const handleProfileChange = (e) => {
     const { name, value } = e.target;
     setProfileData(prev => ({
@@ -38,24 +63,24 @@ export default function ProfilePage() {
     try {
       // In a real app, you'd send the profile data and image to your backend
       console.log('Saving profile:', profileData);
-      
-      // Save profile image to localStorage for header display
-      if (profileData.profileImage instanceof File) {
-        // Convert file to data URL for localStorage
-        const reader = new FileReader();
-        reader.onload = (e) => {
-          localStorage.setItem('userProfileImage', e.target.result);
-        };
-        reader.readAsDataURL(profileData.profileImage);
-      } else if (profileData.profileImage) {
-        // If it's already a URL/data URL, save it directly
-        localStorage.setItem('userProfileImage', profileData.profileImage);
+
+      if (user?.id) {
+        if (profileData.profileImage instanceof File) {
+          const reader = new FileReader();
+          reader.onload = (e) => {
+            const dataUrl = e.target.result;
+            saveProfileImage(user.id, dataUrl);
+            setProfileData((prev) => ({ ...prev, profileImage: dataUrl }));
+            setImagePreview(null);
+          };
+          reader.readAsDataURL(profileData.profileImage);
+        } else if (profileData.profileImage) {
+          saveProfileImage(user.id, profileData.profileImage);
+        }
       }
-      
-      // For now, just show a success message
+
       alert('Profile updated successfully!');
-      
-      // Clean up the preview URL
+
       if (imagePreview) {
         URL.revokeObjectURL(imagePreview);
         setImagePreview(null);
@@ -69,14 +94,25 @@ export default function ProfilePage() {
   const handleImageChange = (e) => {
     const file = e.target.files[0];
     if (file) {
-      // Create a preview URL for the selected image
       const previewUrl = URL.createObjectURL(file);
       setImagePreview(previewUrl);
-      
       setProfileData(prev => ({
         ...prev,
-        profileImage: file
+        profileImage: file,
       }));
+
+      const reader = new FileReader();
+      reader.onload = (loadEvent) => {
+        const dataUrl = loadEvent.target.result;
+        if (user?.id) {
+          saveProfileImage(user.id, dataUrl);
+        }
+        setProfileData(prev => ({
+          ...prev,
+          profileImage: dataUrl,
+        }));
+      };
+      reader.readAsDataURL(file);
     }
   };
 
@@ -141,7 +177,7 @@ export default function ProfilePage() {
             <TabsList className="grid w-full grid-cols-3">
               <TabsTrigger value="profile">Profile</TabsTrigger>
               <TabsTrigger value="bookings">My Bookings</TabsTrigger>
-              {/* <TabsTrigger value="settings">Settings</TabsTrigger> */}
+              <TabsTrigger value="settings">Settings</TabsTrigger>
             </TabsList>
 
             <TabsContent value="profile" className="space-y-6">
@@ -155,7 +191,7 @@ export default function ProfilePage() {
                 <CardContent className="space-y-6">
                   <div className="flex items-center gap-6">
                     <div className="flex flex-col items-center gap-4">
-                      <Avatar className="h-20 w-20">
+                      <Avatar className="h-28 w-28">
                         <AvatarImage src={imagePreview || (profileData.profileImage instanceof File ? '' : profileData.profileImage)} />
                         <AvatarFallback className="text-lg">
                           {profileData.name?.charAt(0)?.toUpperCase() || user.name?.charAt(0)?.toUpperCase() || 'U'}
@@ -177,6 +213,24 @@ export default function ProfilePage() {
                           <User className="h-4 w-4" />
                           Change Photo
                         </label>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (!user) return;
+                            if (imagePreview) {
+                              URL.revokeObjectURL(imagePreview);
+                            }
+                            saveProfileImage(user.id, null);
+                            setProfileData((prev) => ({
+                              ...prev,
+                              profileImage: null,
+                            }));
+                            setImagePreview(null);
+                          }}
+                          className="inline-flex items-center gap-2 px-3 py-2 ml-3 text-sm font-medium text-slate-300 bg-slate-800 border border-slate-600 rounded-lg hover:bg-slate-700 transition-colors"
+                        >
+                          Remove Photo
+                        </button>
                         <p className="text-xs text-slate-500 mt-1">
                           JPG, PNG up to 5MB
                         </p>
@@ -306,15 +360,20 @@ export default function ProfilePage() {
                           <div className="flex justify-between items-center">
                             <div>
                               <p className="text-sm text-muted-foreground">
-                                Seats: {booking.seats.join(', ')}
+                                Seats: {Array.isArray(booking.seats)
+                                  ? booking.seats
+                                      .map((seat) => typeof seat === 'string' ? seat : seat.seat_number || seat.seatNumber || '')
+                                      .filter(Boolean)
+                                      .join(', ')
+                                  : 'N/A'}
                               </p>
                               <p className="text-sm text-muted-foreground">
-                                Booked on {new Date(booking.createdAt).toLocaleDateString()}
+                                Booked on {new Date(booking.created_at || booking.createdAt).toLocaleDateString()}
                               </p>
                             </div>
                             <div className="text-right">
                               <p className="text-lg font-bold text-primary">
-                                KSh {booking.totalAmount}
+                                KSh {booking.total_amount ?? booking.totalAmount}
                               </p>
                               <Button variant="outline" size="sm" className="mt-2">
                                 View Details

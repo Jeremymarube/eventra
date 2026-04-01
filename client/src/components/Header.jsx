@@ -12,7 +12,6 @@ import {
   Plus,
   Settings,
   LogOut,
-  ChevronDown,
   Ticket
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -25,6 +24,16 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback, AvatarImage } from '@/components/ui/avatar';
 import { useAuth } from '@/contexts/AuthContext';
+import {
+  loadNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
+  subscribeNotifications,
+} from '@/lib/notifications';
+import {
+  loadProfileImage,
+  subscribeProfileImageChanges,
+} from '@/lib/profileImage';
 
 export default function Header() {
   const { user, logout } = useAuth();
@@ -32,52 +41,58 @@ export default function Header() {
   const pathname = usePathname();
   const [currentTime, setCurrentTime] = useState(new Date());
   const [profileImage, setProfileImage] = useState(null);
-  const [notifications, setNotifications] = useState([
-    {
-      id: 1,
-      type: 'event_reminder',
-      title: 'Event Reminder',
-      message: 'Your event "Summer Music Festival" starts in 2 hours',
-      timestamp: new Date(Date.now() - 1000 * 60 * 30), // 30 minutes ago
-      read: false,
-    },
-    {
-      id: 2,
-      type: 'booking_confirmation',
-      title: 'Booking Confirmed',
-      message: 'Your booking for "Tech Conference 2024" has been confirmed',
-      timestamp: new Date(Date.now() - 1000 * 60 * 60 * 2), // 2 hours ago
-      read: false,
-    },
-    {
-      id: 3,
-      type: 'payment_received',
-      title: 'Payment Received',
-      message: 'Payment of KSh 1,500 received for event tickets',
-      timestamp: new Date(Date.now() - 1000 * 60 * 60 * 6), // 6 hours ago
-      read: true,
-    },
-  ]);
+  const [notifications, setNotifications] = useState([]);
 
-  // Check if we're on homepage
   const isHomepage = pathname === '/';
 
   useEffect(() => {
     const timer = setInterval(() => {
       setCurrentTime(new Date());
-    }, 60000); // Update every minute
+    }, 60000);
 
     return () => clearInterval(timer);
   }, []);
 
-  // Load profile image from localStorage
   useEffect(() => {
-    if (typeof window !== 'undefined' && user) {
-      const savedImage = localStorage.getItem('userProfileImage');
-      if (savedImage) {
-        setProfileImage(savedImage);
-      }
+    const guestRoutes = ['/events', '/discover', '/categories', '/login', '/register'];
+    const signedInRoutes = ['/home', '/discover', '/events/new', '/home/calendars', '/profile'];
+    const routesToPrefetch = user ? signedInRoutes : guestRoutes;
+
+    routesToPrefetch.forEach((route) => {
+      router.prefetch(route);
+    });
+  }, [router, user]);
+
+  useEffect(() => {
+    if (!user) {
+      setProfileImage(null);
+      return;
     }
+
+    const savedImage = loadProfileImage(user.id);
+    setProfileImage(savedImage || user.profileImage || null);
+
+    const unsubscribe = subscribeProfileImageChanges(user.id, (nextImage) => {
+      setProfileImage(nextImage);
+    });
+
+    return () => unsubscribe();
+  }, [user]);
+
+  useEffect(() => {
+    if (!user) {
+      setNotifications([]);
+      return;
+    }
+
+    const loadCurrentNotifications = () => {
+      setNotifications(loadNotifications(user.id));
+    };
+
+    loadCurrentNotifications();
+
+    const unsubscribe = subscribeNotifications(user.id, setNotifications);
+    return () => unsubscribe();
   }, [user]);
 
   const handleLogout = () => {
@@ -85,39 +100,43 @@ export default function Header() {
     router.push('/');
   };
 
-  // Calculate unread notifications count
-  const unreadCount = notifications.filter(n => !n.read).length;
+  const unreadCount = notifications.filter((n) => !n.read).length;
 
-  // Mark notification as read
-  const markAsRead = (notificationId) => {
-    setNotifications(prev =>
-      prev.map(notification =>
-        notification.id === notificationId
-          ? { ...notification, read: true }
-          : notification
+  const markAsRead = (notificationId, url) => {
+    if (!user) return;
+    markNotificationRead(user.id, notificationId);
+    setNotifications((prev) =>
+      prev.map((notification) =>
+        notification.id === notificationId ? { ...notification, read: true } : notification
       )
     );
+    if (url) {
+      router.push(url);
+    }
   };
 
-  // Mark all notifications as read
   const markAllAsRead = () => {
-    setNotifications(prev =>
-      prev.map(notification => ({ ...notification, read: true }))
-    );
+    if (!user) return;
+    markAllNotificationsRead(user.id);
+    setNotifications((prev) => prev.map((notification) => ({ ...notification, read: true })));
   };
 
-  const navigationItems = user ? [
-    { label: 'Events', href: '/home', icon: Calendar },
-    { label: 'Calendars', href: '/home/calendars', icon: Calendar },
-    { label: 'Discover', href: '/discover', icon: Compass },
-  ] : [];
+  const navigationItems = user
+    ? [
+        { label: 'Events', href: '/home', icon: Calendar },
+        { label: 'Calendars', href: '/home/calendars', icon: Calendar },
+        { label: 'Discover', href: '/discover', icon: Compass },
+      ]
+    : [
+        { label: 'Explore Events', href: '/events', icon: Ticket },
+        { label: 'Discover', href: '/discover', icon: Compass },
+      ];
 
   return (
     <header className={`sticky top-0 z-50 w-full border-b border-blue-900 ${
       isHomepage ? 'bg-black' : 'bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60'
     }`}>
       <div className="container flex h-16 items-center justify-between px-4 relative">
-        {/* Logo */}
         <div className="flex items-center space-x-4">
           <Link href="/" className="flex items-center space-x-2">
             <div className="h-10 w-10 rounded-xl bg-gradient-to-br from-blue-400 to-blue-600 flex items-center justify-center shadow-lg transform rotate-3 hover:rotate-0 transition-transform duration-300">
@@ -127,7 +146,6 @@ export default function Header() {
           </Link>
         </div>
 
-        {/* Navigation */}
         <nav className="hidden md:flex items-center space-x-6">
           {navigationItems.map((item) => {
             const Icon = item.icon;
@@ -144,16 +162,13 @@ export default function Header() {
           })}
         </nav>
 
-        {/* Main Actions - Time, Create, Search, Notifications, Profile */}
         <div className="flex items-center space-x-4">
           {user ? (
             <>
-              {/* Local Time */}
               <div className="hidden md:block text-sm text-muted-foreground">
                 {currentTime.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} GMT
               </div>
 
-              {/* Create Event */}
               <Button
                 size="sm"
                 className="bg-orange-500 hover:bg-orange-600 text-white"
@@ -163,7 +178,6 @@ export default function Header() {
                 Create Event
               </Button>
 
-              {/* Search/Shortcuts */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button
@@ -236,7 +250,6 @@ export default function Header() {
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              {/* Notifications */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="sm" className="h-9 w-9 p-0 relative">
@@ -271,7 +284,7 @@ export default function Header() {
                           className={`p-4 border-b border-slate-800 hover:bg-slate-900 cursor-pointer transition-colors ${
                             !notification.read ? 'bg-slate-900/50' : ''
                           }`}
-                          onClick={() => markAsRead(notification.id)}
+                          onClick={() => markAsRead(notification.id, notification.url)}
                         >
                           <div className="flex items-start gap-3">
                             <div className={`w-2 h-2 rounded-full mt-2 ${
@@ -288,7 +301,7 @@ export default function Header() {
                                 {notification.message}
                               </p>
                               <p className="text-xs text-slate-500 mt-1">
-                                {notification.timestamp.toLocaleString()}
+                                {new Date(notification.timestamp).toLocaleString()}
                               </p>
                             </div>
                             {!notification.read && (
@@ -319,7 +332,6 @@ export default function Header() {
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              {/* Profile Dropdown */}
               <DropdownMenu>
                 <DropdownMenuTrigger asChild>
                   <Button variant="ghost" size="sm" className="h-9 w-9 p-0 rounded-full bg-slate-700 hover:bg-slate-600">
@@ -364,12 +376,10 @@ export default function Header() {
             </>
           ) : (
             <>
-              {/* Create Event - Requires Sign In */}
-              <Button 
-                size="sm" 
+              <Button
+                size="sm"
                 className="bg-orange-500 hover:bg-orange-600 text-white flex items-center space-x-2"
                 onClick={() => {
-                  // Store intended destination before redirecting to login
                   if (typeof window !== 'undefined') {
                     localStorage.setItem('redirectAfterLogin', '/events/new');
                   }
@@ -380,15 +390,6 @@ export default function Header() {
                 <span>Create Event</span>
               </Button>
 
-              {/* Explore Events */}
-              <Link href="/categories">
-                <Button variant="ghost" size="sm" className="flex items-center space-x-2">
-                  <Compass className="h-4 w-4" />
-                  <span>Explore Events</span>
-                </Button>
-              </Link>
-
-              {/* Sign In */}
               <Link href="/login">
                 <Button variant="ghost" size="sm">
                   Sign In
@@ -398,7 +399,6 @@ export default function Header() {
           )}
         </div>
       </div>
-
     </header>
   );
 }

@@ -40,19 +40,26 @@ export function WebSocketProvider({ children }) {
   }, [toast]);
 
   const handleError = useCallback((error) => {
-    // ignore completely empty payloads that sometimes come from the server
-    // (e.g. { type: 'error' } with no additional fields). they aren't
-    // actionable and only clutter the console/toasts.
-    if (!error || (typeof error === 'object' && Object.keys(error).length === 0)) {
+    const isEmptyObject = typeof error === 'object' && error !== null && Object.keys(error).length === 0;
+    if (!error || isEmptyObject) {
       return;
     }
 
-    // error may also be a string or an object with an `error`/`message` field
-    const msg = (error && error.error) || error?.message || error.toString() || 'Real-time connection error';
+    const msg =
+      (typeof error === 'string' && error) ||
+      error?.error ||
+      error?.message ||
+      error?.details?.eventType ||
+      'Real-time connection error';
 
-    // Only log if we actually have something useful to see
-    if (typeof error === 'string' || (typeof error === 'object' && Object.keys(error).length > 0)) {
-      console.error('WebSocket error:', error);
+    const usefulDetails = typeof error === 'object' && error !== null
+      ? Object.fromEntries(
+          Object.entries(error).filter(([, value]) => value !== undefined && value !== null && value !== '')
+        )
+      : error;
+
+    if (typeof usefulDetails === 'string' || (typeof usefulDetails === 'object' && Object.keys(usefulDetails).length > 0)) {
+      console.warn('WebSocket error:', usefulDetails);
     }
 
     toast({
@@ -157,3 +164,4 @@ export const withWebSocket = (WrappedComponent) => {
     );
   };
 };
+

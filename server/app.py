@@ -147,6 +147,16 @@ if __name__ == '__main__':
             cols = [row[1] for row in res]
             if 'google_id' not in cols:
                 conn.execute(text("ALTER TABLE users ADD COLUMN google_id VARCHAR(255)"))
+
+            # Events table columns
+            res = conn.execute(text("PRAGMA table_info('events')")).fetchall()
+            cols = [row[1] for row in res]
+            if 'location_latitude' not in cols:
+                conn.execute(text("ALTER TABLE events ADD COLUMN location_latitude FLOAT"))
+            if 'location_longitude' not in cols:
+                conn.execute(text("ALTER TABLE events ADD COLUMN location_longitude FLOAT"))
+            if 'show_location_map' not in cols:
+                conn.execute(text("ALTER TABLE events ADD COLUMN show_location_map BOOLEAN DEFAULT 0"))
             
             conn.commit()
             conn.close()
@@ -199,3 +209,4 @@ if __name__ == '__main__':
         db.session.commit()
     
     app.run(debug=True, host='0.0.0.0', port=5000)
+

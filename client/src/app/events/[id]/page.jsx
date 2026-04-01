@@ -20,7 +20,8 @@ import {
   UserPlus,
   Crown,
   Copy,
-  ExternalLink
+  ExternalLink,
+  MessageCircle
 } from 'lucide-react';
 import { toast } from 'sonner';
 
@@ -57,6 +58,19 @@ export default function EventDetailsPage() {
 
   const isCreator = user && event && (String(user.id) === String(event.created_by) || user.is_admin);
   const isAdmin = user && user.is_admin;
+  const needsSeatData = Boolean(eventId && event && !isCreator && !isAdmin && Number(event.total_seats) > 0);
+  const hasLocationMap = Boolean(event?.show_location_map && event?.location_latitude != null && event?.location_longitude != null);
+  const locationMapUrl = hasLocationMap
+    ? `https://www.openstreetmap.org/export/embed.html?bbox=${Number(event.location_longitude) - 0.01}%2C${Number(event.location_latitude) - 0.01}%2C${Number(event.location_longitude) + 0.01}%2C${Number(event.location_latitude) + 0.01}&layer=mapnik&marker=${event.location_latitude}%2C${event.location_longitude}`
+    : null;
+  const frontendBase = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
+  const eventShareUrl = `${frontendBase}/events/${eventId}`;
+  const whatsappText = event
+    ? (event.status === 'cancelled'
+        ? `The event "${event.title}" has been cancelled. Details: ${eventShareUrl}`
+        : `Check out this event on Eventra: ${event.title} ${eventShareUrl}`)
+    : `Check out this event on Eventra: ${eventShareUrl}`;
+  const whatsappUrl = `https://wa.me/?text=${encodeURIComponent(whatsappText)}`;
 
   const {
     data: seats = [],
@@ -65,7 +79,7 @@ export default function EventDetailsPage() {
   } = useQuery({
     queryKey: ['event-seats', eventId],
     queryFn: () => eventService.getSeats(eventId),
-    enabled: !!eventId,
+    enabled: needsSeatData,
   });
 
   const [selectedSeats, setSelectedSeats] = useState([]);
@@ -157,11 +171,6 @@ export default function EventDetailsPage() {
   const handleCancelEvent = async () => {
     if (!eventId) return;
 
-    // Check if user is admin
-    if (!isAdmin) {
-      toast.error('Only administrators can cancel events');
-      return;
-    }
 
     // Confirm cancellation
     const confirmed = window.confirm(
@@ -172,11 +181,15 @@ export default function EventDetailsPage() {
 
     setIsCancelling(true);
     try {
-      await eventService.cancelEvent(eventId);
-      toast.success('Event cancelled successfully');
+      const result = await eventService.cancelEvent(eventId);
+      const notificationsSent = result?.notifications_sent ?? 0;
+      toast.success(
+        notificationsSent > 0
+          ? `Event cancelled and ${notificationsSent} attendee email${notificationsSent === 1 ? '' : 's'} sent.`
+          : 'Event cancelled successfully'
+      );
       
-      // Refresh the page to show updated status
-      window.location.reload();
+      router.push('/home');
     } catch (err) {
       console.error('Cancel event error:', err);
       toast.error(err?.response?.data?.error || err?.message || 'Failed to cancel event');
@@ -185,7 +198,7 @@ export default function EventDetailsPage() {
     }
   };
 
-  if (loadingEvent || loadingSeats) {
+  if (loadingEvent || (needsSeatData && loadingSeats)) {
     return (
       <div className="container mx-auto px-4 py-8">
         <div className="max-w-5xl mx-auto space-y-6">
@@ -202,7 +215,7 @@ export default function EventDetailsPage() {
     );
   }
 
-  if (eventError || seatsError || !event) {
+  if (eventError || (needsSeatData && seatsError) || !event) {
     return (
       <div className="container mx-auto px-4 py-12">
         <div className="max-w-2xl mx-auto text-center">
@@ -346,6 +359,12 @@ export default function EventDetailsPage() {
                         <Button variant="outline" size="sm" className="border-gray-300 hover:bg-gray-50">
                           <Copy className="h-4 w-4 mr-2" />
                           Copy
+                        </Button>
+                        <Button asChild variant="outline" size="sm" className="border-green-300 text-green-700 hover:bg-green-50">
+                          <a href={whatsappUrl} target="_blank" rel="noreferrer">
+                            <MessageCircle className="h-4 w-4 mr-2" />
+                            WhatsApp
+                          </a>
                         </Button>
                       </div>
                     </div>
@@ -1078,9 +1097,21 @@ export default function EventDetailsPage() {
                   </div>
                   <div className="flex items-start gap-3">
                     <MapPin className="h-5 w-5 text-red-500 mt-0.5 flex-shrink-0" />
-                    <div>
-                      <p className="font-medium text-gray-900">Location Missing</p>
-                      <p className="text-sm text-gray-600">Please enter the location of the event before it starts.</p>
+                    <div className="w-full">
+                      <p className="font-medium text-gray-900">{event.venue || 'Location missing'}</p>
+                      <p className="text-sm text-gray-600">
+                        {hasLocationMap ? 'Attendees will also see the shared map below.' : 'Turn on location sharing in the event form to show a map here.'}
+                      </p>
+                      {hasLocationMap && (
+                        <div className="mt-3 overflow-hidden rounded-xl border border-gray-200">
+                          <iframe
+                            title={`Map for ${event.title}`}
+                            src={locationMapUrl}
+                            className="h-64 w-full"
+                            loading="lazy"
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -1283,9 +1314,19 @@ export default function EventDetailsPage() {
                   </div>
                   <div className="flex items-start gap-3 p-3 bg-slate-900/50 rounded-lg border border-slate-700/30">
                     <MapPin className="h-5 w-5 text-red-400 mt-0.5 flex-shrink-0" />
-                    <div>
+                    <div className="w-full">
                       <p className="text-sm font-medium text-slate-300">Venue</p>
                       <p className="text-white">{event.venue}</p>
+                      {hasLocationMap && (
+                        <div className="mt-3 overflow-hidden rounded-lg border border-slate-700/50">
+                          <iframe
+                            title={`Map for ${event.title}`}
+                            src={locationMapUrl}
+                            className="h-64 w-full"
+                            loading="lazy"
+                          />
+                        </div>
+                      )}
                     </div>
                   </div>
                 </CardContent>
@@ -1357,3 +1398,12 @@ export default function EventDetailsPage() {
     </div>
   );
 }
+
+
+
+
+
+
+
+
+

@@ -103,7 +103,7 @@ cd event-ticketing-system
 ### 2. Backend Setup
 
 ```bash
-cd backend
+cd server
 
 # Create virtual environment
 python -m venv venv
@@ -182,7 +182,7 @@ Backend runs on: http://localhost:5000
 ### 3. Frontend Setup
 
 ```bash
-cd ../frontend
+cd ../client
 
 # Install dependencies
 npm install
@@ -471,3 +471,4 @@ For issues and questions:
 ---
 
 **Built with ❤️ using Flask, Next.js, Stripe, and M-Pesa**
+
